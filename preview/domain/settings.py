@@ -195,6 +195,15 @@ def parse_settings(
             True,
             report,
         ),
+        table_font_scale=_number(
+            values,
+            "table_font_scale",
+            defaults.table_font_scale,
+            0.5,
+            1.5,
+            False,
+            report,
+        ),
         table_max_columns=_number(
             values,
             "table_max_columns",

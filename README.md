@@ -184,7 +184,9 @@ Before enabling diagrams or math, read [Network and privacy](#network-and-privac
 ## Tables
 
 Markdown tables appear as aligned columns in a fixed-width font and adjust to
-the preview's width. For a traditional web-style table, use **Open in Browser**.
+the preview's width. Set `table_font_scale` (0.5 to 1.5, default 1.0) to draw
+them smaller or larger than the body text; a smaller table fits more columns
+before its cells wrap. For a traditional web-style table, use **Open in Browser**.
 
 ## Code blocks
 

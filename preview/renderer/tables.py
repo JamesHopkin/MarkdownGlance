@@ -49,7 +49,10 @@ CJK_ADVANCE = 0.5
 # and a budget counted at 0.5 em overflows the preview by a fifth.
 CJK_FONT_SHIPS = sys.platform.startswith("linux")
 # Body padding (1.5rem each side), table padding (1rem) and border (0.08rem).
+# All in rem, so `table_font_scale` leaves them where they are.
 CHROME_REM = 5.16
+# `.md-table { line-height }` in `resources/preview.css`, scaled with the font.
+LINE_REM = 1.45
 # One column for the scrollbar and for rounding in the host's own measurement.
 SAFETY_COLUMNS = 1
 FALLBACK_COLUMNS = 48
@@ -418,28 +421,56 @@ def _row_nodes(row: Row, widths: Sequence[int], ambiguous: int) -> List[ElementN
     return nodes
 
 
-def budgets(viewport_width: float, rem_px: int, cap: int) -> Tuple[int, int]:
+def table_font_px(rem_px: int, scale: float) -> int:
+    """The table's font size in whole pixels.
+
+    Snapped to a pixel so that the advance `budgets` rounds is the one minihtml
+    draws: the rounding was measured at a whole-pixel size, and a fractional
+    one would leave it to the host which way 13.6 px goes.
+    """
+    return max(1, round(rem_px * scale))
+
+
+def table_style(rem_px: int, scale: float) -> str:
+    """The inline style a scaled table carries, or "" at the stylesheet's size."""
+    font_px = table_font_px(rem_px, scale)
+    if font_px == rem_px or rem_px <= 0:
+        return ""
+    ratio = font_px / rem_px
+    return "font-size: {:.4f}rem; line-height: {:.4f}rem".format(
+        ratio, LINE_REM * ratio
+    )
+
+
+def budgets(
+    viewport_width: float, rem_px: int, cap: int, scale: float = 1.0
+) -> Tuple[int, int]:
     """Characters that fit the preview, for the Latin and the CJK font.
 
     The two fonts have different advances, and which one a table uses is only
     known once its content has been read, so both are worked out here and the
     table picks one. Where the CJK font is not shipped, both are the Latin one.
+    `scale` is `table_font_scale`: a smaller table font fits more characters
+    into the same width.
     """
     fallback = min(cap, FALLBACK_COLUMNS)
     if viewport_width <= 0 or rem_px <= 0:
         return fallback, fallback
     content = viewport_width - CHROME_REM * rem_px
     cjk_advance = CJK_ADVANCE if CJK_FONT_SHIPS else LATIN_ADVANCE
+    font_px = table_font_px(rem_px, scale)
     return tuple(  # type: ignore[return-value]
         max(
             MIN_COLUMN,
-            min(cap, int(content // math.ceil(advance * rem_px)) - SAFETY_COLUMNS),
+            min(cap, int(content // math.ceil(advance * font_px)) - SAFETY_COLUMNS),
         )
         for advance in (LATIN_ADVANCE, cjk_advance)
     )
 
 
-def _table_node(table: ElementNode, latin: int, cjk: int) -> ElementNode:
+def _table_node(
+    table: ElementNode, latin: int, cjk: int, style: str = ""
+) -> ElementNode:
     rows = _rows(table)
     wide = _has_cjk(rows)
     ambiguous = 2 if wide else 1
@@ -456,15 +487,22 @@ def _table_node(table: ElementNode, latin: int, cjk: int) -> ElementNode:
             nodes[-1].attrs["class"] += " md-table-rule"
         children.extend(nodes)
     classes = "md-table md-table-cjk" if wide else "md-table"
-    return ElementNode("div", {"class": classes}, children, generated=True)
+    attrs = {"class": classes}
+    if style:
+        attrs["style"] = style
+    return ElementNode("div", attrs, children, generated=True)
 
 
-def replace_tables(nodes: List[Node], latin: int, cjk: int) -> None:
-    """Replace every ``table`` subtree in place with aligned monospace rows."""
+def replace_tables(nodes: List[Node], latin: int, cjk: int, style: str = "") -> None:
+    """Replace every ``table`` subtree in place with aligned monospace rows.
+
+    `style` comes from `table_style`, and sizes the table's font to match the
+    budget it was laid out for.
+    """
     for index, node in enumerate(list(nodes)):
         if not isinstance(node, ElementNode):
             continue
         if node.tag == "table":
-            nodes[index] = _table_node(node, latin, cjk)
+            nodes[index] = _table_node(node, latin, cjk, style)
             continue
-        replace_tables(node.children, latin, cjk)
+        replace_tables(node.children, latin, cjk, style)

@@ -5,8 +5,9 @@ import unittest
 from unittest import mock
 
 from MarkdownGlance.preview.application.render_pipeline import render
+from MarkdownGlance.preview.domain.settings import parse_settings
 from MarkdownGlance.preview.renderer import tables
-from MarkdownGlance.preview.renderer.tables import budgets
+from MarkdownGlance.preview.renderer.tables import budgets, table_style
 from MarkdownGlance.preview.domain.contracts import (
     AssetStatus,
     Failed,
@@ -253,6 +254,41 @@ class BudgetTest(unittest.TestCase):
 
     def test_zoom_costs_columns(self):
         self.assertLess(budgets(904.0, 24, 200)[0], budgets(904.0, 16, 200)[0])
+
+
+class FontScaleTest(unittest.TestCase):
+    def test_a_smaller_table_font_fits_more_columns(self):
+        # 0.85 of a 16 px root is 13.6, drawn at 14 px: a 9 px advance, so the
+        # same 904 px preview that fits 81 columns at full size fits 90.
+        self.assertEqual(budgets(904.0, 16, 200, 0.85)[0], 90)
+        self.assertGreater(budgets(904.0, 16, 200, 1.25)[0], 0)
+        self.assertLess(budgets(904.0, 16, 200, 1.25)[0], 81)
+
+    def test_the_style_snaps_the_font_to_a_whole_pixel(self):
+        self.assertEqual(table_style(16, 1.0), "")
+        self.assertEqual(table_style(16, 1.02), "")
+        self.assertEqual(
+            table_style(16, 0.85), "font-size: 0.8750rem; line-height: 1.2688rem"
+        )
+
+    def test_a_scaled_table_carries_its_size_and_fits_its_budget(self):
+        settings = RenderSettings(table_font_scale=0.85)
+        html = body(SOURCES, settings, viewport_width=700.0)
+        self.assertIn(
+            '<div class="md-table" style="font-size: 0.8750rem; '
+            'line-height: 1.2688rem">',
+            html,
+        )
+        self.assertIn('<div class="md-table">', body(SOURCES, viewport_width=700.0))
+        columns = budgets(700.0, 16, 200, 0.85)[0]
+        for _, cells in rows(SOURCES, settings, viewport_width=700.0):
+            self.assertLessEqual(sum(width(cell) for cell in cells), columns, cells)
+
+    def test_the_setting_is_clamped(self):
+        self.assertEqual(parse_settings({}).table_font_scale, 1.0)
+        for value, clamped in ((0.1, 0.5), (3, 1.5)):
+            settings = parse_settings({"table_font_scale": value})
+            self.assertEqual(settings.table_font_scale, clamped)
 
 
 class ViewportFitTest(unittest.TestCase):

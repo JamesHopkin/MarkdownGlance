@@ -245,6 +245,7 @@ class Container:
             viewport_width,
             root_font_px(stage.zoom if stage is not None else 1.0),
             self.settings.get().table_max_columns,
+            self.settings.get().table_font_scale,
         )
 
     def _watch_viewports(self) -> None:

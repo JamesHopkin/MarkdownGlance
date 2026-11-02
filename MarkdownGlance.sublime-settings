@@ -43,6 +43,11 @@
     // upper bound, for keeping tables readable on a very wide screen.
     "table_max_columns": 200,
 
+    // The size of a table's text relative to the body, from 0.5 to 1.5.
+    // Smaller fits more columns before a cell wraps; the column budget follows
+    // it, so alignment holds at any size.
+    "table_font_scale": 1.0,
+
     // Fenced code that names its language is coloured the way the editor
     // colours it inside the source: the same syntaxes, the same colour scheme.
     // It is tokenised here, by Sublime Text; nothing is sent anywhere.

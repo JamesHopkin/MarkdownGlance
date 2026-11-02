@@ -22,6 +22,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   It applies to the server and to a local renderer alike. mermaid.ink has
   lately drawn `neo` when not told otherwise, so its diagrams now come with
   plain borders unless you choose `neo`.
+- **`table_font_scale` sizes table text.** From 0.5 to 1.5 of the body size,
+  1.0 by default. The column budget is worked out at the scaled size, so a
+  smaller table fits more columns before its cells wrap, and the font is
+  snapped to a whole pixel so the advance stays the one measured in ADR 0007.
 
 ## [0.7.0] - 2026-11-01
 

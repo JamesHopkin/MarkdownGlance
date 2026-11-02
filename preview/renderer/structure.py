@@ -17,7 +17,7 @@ from .highlight import Highlighter, highlight
 from .markdown_engine import MarkdownEngine, default_engine
 from .model import ElementNode, Node, StructuredDoc, TextNode
 from .stylesheet import root_font_px
-from .tables import budgets, replace_tables
+from .tables import budgets, replace_tables, table_style
 
 # The theme reaches the builders because a diagram is baked at request time:
 # it cannot adapt to the preview background the way CSS does. A formula is
@@ -392,13 +392,16 @@ def parse(
         position += max(len(text), 1)
 
     # After the walk: the alignment padding is layout, not document text.
+    rem_px = root_font_px(request.zoom)
+    scale = request.settings.table_font_scale
     latin, cjk = budgets(
         request.viewport_width,
-        root_font_px(request.zoom),
+        rem_px,
         request.settings.table_max_columns,
+        scale,
     )
     _number_ordered_lists(parser.roots)
-    replace_tables(parser.roots, latin, cjk)
+    replace_tables(parser.roots, latin, cjk, table_style(rem_px, scale))
 
     return StructuredDoc(
         tuple(parser.roots),
