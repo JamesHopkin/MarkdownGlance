@@ -1,4 +1,4 @@
-"""Rewrite table trees into aligned monospace rows.
+"""Rewrite table trees into aligned rows: monospace, or proportional.
 
 minihtml implements no ``<table>`` layout and no ``width`` property, so the host
 cannot lay a table out and the renderer has to do the typesetting itself.
@@ -19,13 +19,31 @@ The budget comes from the measured preview width, so a table fills the group it
 is in and re-fits when the window is resized. `budgets()` converts pixels to
 characters for both fonts the stylesheet can pick; when the width is not known
 yet it falls back to a width that suits a narrow group.
+
+With `table_font_family` set, the same layout runs in pixels instead (ADR
+0024): widths come from a measurer that asks the host how wide each character
+is drawn, and each cell is held at its column's width by a spacer image rather
+than padded with U+00A0. Until the measurer knows every character a render
+needs, its tables are set in monospace as before.
 """
 
 import math
 import re
 import sys
 import unicodedata
-from typing import List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import (
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from .model import ElementNode, Node, TextNode
 
@@ -56,6 +74,26 @@ LINE_REM = 1.45
 # One column for the scrollbar and for rounding in the host's own measurement.
 SAFETY_COLUMNS = 1
 FALLBACK_COLUMNS = 48
+
+# Proportional tables (ADR 0024). A cell is an inline-block held open by a
+# transparent image stretched to the column's width, so it is exactly as wide
+# as its column whatever its text measures -- provided the text is no wider.
+# The widths are the host's own, measured per character; they are summed and
+# rounded up with a margin, because a word's real width also carries kerning.
+SPACER = (
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+)
+MEASURE_SAFETY = 1.05
+# Gap between columns and the narrowest column, in ems of the table's font.
+PROPORTIONAL_GAP_EM = 1.0
+PROPORTIONAL_MIN_EM = 2.0
+# What a character averages, for the width the setting's cap stands for.
+AVERAGE_EM = 0.5
+
+# A measurer answers for one font, size and style -- "" for regular text, then
+# any of "b" bold, "i" italic and "c" code -- with a width for every character
+# asked about, or None while any of them is still unknown.
+TextMeasurer = Callable[[str, int, str, FrozenSet[str]], Optional[Mapping[str, float]]]
 
 Row = Tuple[bool, List[ElementNode]]
 # Width, node, and how the word joins the one before it: "space" (a line may
@@ -184,15 +222,100 @@ def _caption(table: ElementNode) -> Optional[ElementNode]:
     return None
 
 
-def _column_extents(rows: Sequence[Row], ambiguous: int) -> Tuple[List[int], List[int]]:
+def _style(chain: Sequence[ElementNode], header: bool) -> str:
+    """The measuring style of text inside `chain`, in a header row or not."""
+    tags = {element.tag for element in chain}
+    bold = header or bool(tags & {"strong", "b"})
+    italic = bool(tags & {"em", "i"})
+    return ("b" if bold else "") + ("i" if italic else "") + (
+        "c" if "code" in tags else ""
+    )
+
+
+class _Monospace:
+    """Character columns, padded with U+00A0: the layout ADR 0007 describes."""
+
+    gap = COLUMN_GAP
+    minimum = MIN_COLUMN
+
+    def __init__(self, ambiguous: int) -> None:
+        self.ambiguous = ambiguous
+
+    def width(self, text: str, style: str) -> int:
+        return _display_width(text, self.ambiguous)
+
+    def space(self) -> int:
+        return 1
+
+    def extents(self, cell: ElementNode, header: bool) -> Tuple[int, int]:
+        text = _cell_text(cell)
+        return (
+            _display_width(text, self.ambiguous),
+            _longest_unit(text, self.ambiguous),
+        )
+
+
+class _Proportional:
+    """Whole pixels, from widths the host measured for each character."""
+
+    def __init__(self, widths: Mapping[str, Mapping[str, float]], font_px: int) -> None:
+        self._widths = widths
+        self.gap = max(1, round(PROPORTIONAL_GAP_EM * font_px))
+        self.minimum = max(1, round(PROPORTIONAL_MIN_EM * font_px))
+        self._space = math.ceil(widths[""][" "])
+
+    def width(self, text: str, style: str) -> int:
+        table = self._widths[style]
+        drawn = sum(table[char] for char in text if not unicodedata.combining(char))
+        return math.ceil(drawn * MEASURE_SAFETY) if drawn else 0
+
+    def space(self) -> int:
+        return self._space
+
+    def extents(self, cell: ElementNode, header: bool) -> Tuple[int, int]:
+        words = _words(cell, 1 << 30, self, header)
+        longest = max((sum(word[0] for word in run) for run in _runs(words)), default=0)
+        return _line_width(words, self), longest
+
+
+class _Collector:
+    """Stands in for the metrics once, to learn which characters each style
+    needs before anything is asked of the measurer."""
+
+    gap = COLUMN_GAP
+    minimum = MIN_COLUMN
+
+    def __init__(self) -> None:
+        self.needed: Dict[str, Set[str]] = {"": {" "}}
+
+    def width(self, text: str, style: str) -> int:
+        self.needed.setdefault(style, set()).update(
+            char for char in text if not unicodedata.combining(char)
+        )
+        return len(text)
+
+    def space(self) -> int:
+        return 1
+
+
+@dataclass(frozen=True)
+class ProportionalTables:
+    """What a proportional layout needs: the font, its size, the width it has
+    to fit and the measurer that knows the host's widths."""
+
+    family: str
+    font_px: int
+    budget_px: int
+    measure: TextMeasurer
+
+
+def _column_extents(rows: Sequence[Row], metrics) -> Tuple[List[int], List[int]]:
     """Per column: the width that needs no wrapping, and its longest word."""
     natural: List[int] = []
     longest: List[int] = []
-    for _, cells in rows:
+    for header, cells in rows:
         for index, cell in enumerate(cells):
-            text = _cell_text(cell)
-            width = _display_width(text, ambiguous)
-            word = _longest_unit(text, ambiguous)
+            width, word = metrics.extents(cell, header)
             if index < len(natural):
                 natural[index] = max(natural[index], width)
                 longest[index] = max(longest[index], word)
@@ -202,8 +325,10 @@ def _column_extents(rows: Sequence[Row], ambiguous: int) -> Tuple[List[int], Lis
     return natural, longest
 
 
-def _allocate(natural: Sequence[int], longest: Sequence[int], budget: int) -> List[int]:
-    """Share `budget` characters over the columns.
+def _allocate(
+    natural: Sequence[int], longest: Sequence[int], budget: int, metrics
+) -> List[int]:
+    """Share `budget` over the columns.
 
     Every column keeps room for its longest unbreakable run, so wrapping breaks
     between words rather than inside them; the columns with the most room to
@@ -213,15 +338,16 @@ def _allocate(natural: Sequence[int], longest: Sequence[int], budget: int) -> Li
     count = len(natural)
     if not count:
         return []
-    available = budget - COLUMN_GAP * (count - 1)
+    minimum = metrics.minimum
+    available = budget - metrics.gap * (count - 1)
     if available >= sum(natural):
         return list(natural)
-    available = max(available, MIN_COLUMN * count)
+    available = max(available, minimum * count)
     floors = [
-        max(MIN_COLUMN, min(longest[index], natural[index])) for index in range(count)
+        max(minimum, min(longest[index], natural[index])) for index in range(count)
     ]
     if sum(floors) >= available:
-        return [max(MIN_COLUMN, width) for width in _share(floors, available)]
+        return [max(minimum, width) for width in _share(floors, available)]
     widths = list(natural)
     deficit = sum(widths) - available
     while deficit > 0:
@@ -230,13 +356,20 @@ def _allocate(natural: Sequence[int], longest: Sequence[int], budget: int) -> Li
         )
         if widths[index] <= floors[index]:
             break
-        widths[index] -= 1
-        deficit -= 1
+        # One unit at a time keeps the shares even; a pixel layout has a
+        # great many units, so it gives them up a few at a time.
+        step = (
+            1
+            if isinstance(metrics, _Monospace)
+            else min(deficit, widths[index] - floors[index], 8)
+        )
+        widths[index] -= step
+        deficit -= step
     return widths
 
 
 def _share(weights: Sequence[int], available: int) -> List[int]:
-    """Split `available` characters in proportion to `weights`, losing none."""
+    """Split `available` in proportion to `weights`, losing none."""
     total = sum(weights)
     shares = [0] * len(weights)
     if available <= 0:
@@ -251,19 +384,20 @@ def _share(weights: Sequence[int], available: int) -> List[int]:
     return shares
 
 
-def _chunks(text: str, width: int, ambiguous: int) -> List[str]:
+def _chunks(text: str, width: int, metrics, style: str) -> List[str]:
     """Hard-split a word too long for its column, so it cannot overflow."""
+    if metrics.width(text, style) <= width:
+        return [text]
     pieces: List[str] = []
     current = ""
-    used = 0
     for char in text:
-        size = _display_width(char, ambiguous)
-        if current and used + size > width:
+        # The piece as a whole, not a sum of its characters: a proportional
+        # width is rounded up once per measurement, and rounding each
+        # character would split a word that fits.
+        if current and metrics.width(current + char, style) > width:
             pieces.append(current)
             current = ""
-            used = 0
         current += char
-        used += size
     if current:
         pieces.append(current)
     return pieces
@@ -275,7 +409,7 @@ def _clone_chain(node: Node, chain: Sequence[ElementNode]) -> Node:
     return node
 
 
-def _words(cell: ElementNode, width: int, ambiguous: int) -> List[Word]:
+def _words(cell: ElementNode, width: int, metrics, header: bool = False) -> List[Word]:
     """Flatten a cell into wrappable words, each keeping its own markup.
 
     A word carries a clone of the elements it sits inside, so breaking a line
@@ -293,13 +427,14 @@ def _words(cell: ElementNode, width: int, ambiguous: int) -> List[Word]:
                 if not pieces:
                     gap[0] = gap[0] or bool(child.text)
                     continue
+                style = _style(chain, header)
                 leading = gap[0] or child.text[:1].isspace()
                 for position, piece in enumerate(pieces):
                     joint = SPACE if position or leading else GLUED
-                    for order, chunk in enumerate(_chunks(piece, width, ambiguous)):
+                    for order, chunk in enumerate(_chunks(piece, width, metrics, style)):
                         words.append(
                             (
-                                _display_width(chunk, ambiguous),
+                                metrics.width(chunk, style),
                                 _clone_chain(TextNode(chunk), chain),
                                 BREAK if order else joint,
                             )
@@ -331,13 +466,20 @@ def _runs(words: Sequence[Word]) -> List[List[Word]]:
     return runs
 
 
-def _lines(words: Sequence[Word], width: int) -> List[List[Word]]:
+def _line_width(line: Sequence[Word], metrics) -> int:
+    return sum(
+        word[0] + (metrics.space() if index and word[2] == SPACE else 0)
+        for index, word in enumerate(line)
+    )
+
+
+def _lines(words: Sequence[Word], width: int, metrics) -> List[List[Word]]:
     lines: List[List[Word]] = []
     current: List[Word] = []
     used = 0
     for run in _runs(words):
         size = sum(word[0] for word in run)
-        space = 1 if (current and run[0][2] == SPACE) else 0
+        space = metrics.space() if (current and run[0][2] == SPACE) else 0
         if current and used + space + size > width:
             lines.append(current)
             current = [(run[0][0], run[0][1], BREAK)] + list(run[1:])
@@ -374,12 +516,19 @@ def _padding(deficit: int, align: str) -> Tuple[int, int]:
     return 0, deficit
 
 
-def _cell_span(line: Sequence[Word], width: int, align: str, last: bool) -> ElementNode:
-    used = sum(
-        word[0] + (1 if index and word[2] == SPACE else 0)
-        for index, word in enumerate(line)
-    )
-    lead, trail = _padding(width - used, align)
+def _line_children(line: Sequence[Word]) -> List[Node]:
+    children: List[Node] = []
+    for index, word in enumerate(line):
+        if index and word[2] == SPACE:
+            children.append(TextNode(" "))
+        children.append(word[1])
+    return children
+
+
+def _cell_span(
+    line: Sequence[Word], width: int, align: str, last: bool, metrics
+) -> ElementNode:
+    lead, trail = _padding(width - _line_width(line, metrics), align)
     if last:
         # Nothing follows on the line, so trailing padding would be invisible.
         trail = 0
@@ -388,33 +537,68 @@ def _cell_span(line: Sequence[Word], width: int, align: str, last: bool) -> Elem
     children: List[Node] = []
     if lead:
         children.append(TextNode(NBSP * lead))
-    for index, word in enumerate(line):
-        if index and word[2] == SPACE:
-            children.append(TextNode(" "))
-        children.append(word[1])
+    children.extend(_line_children(line))
     if trail:
         children.append(TextNode(NBSP * trail))
     return ElementNode("span", {"class": "md-table-cell"}, children, generated=True)
 
 
-def _row_nodes(row: Row, widths: Sequence[int], ambiguous: int) -> List[ElementNode]:
+def _spaced_cell(
+    line: Sequence[Word], width: int, align: str, last: bool, metrics
+) -> ElementNode:
+    """A proportional cell: its line in a block the spacer holds `width` wide.
+
+    The block takes the cell's width from the spacer beneath it, so alignment
+    is `text-align` inside it rather than padding. The gap to the next column
+    is the cell's own right padding, outside the width the text is aligned in.
+    """
+    block_style = "display: block"
+    if align in ("right", "center"):
+        block_style += "; text-align: {}".format(align)
+    text = _line_children(line) or [TextNode(NBSP)]
+    spacer = ElementNode(
+        "img",
+        {
+            "class": "md-table-spacer",
+            "src": SPACER,
+            "width": str(width),
+            "height": "1",
+            "style": "width: {}px; height: 1px".format(width),
+        },
+        [],
+        generated=True,
+    )
+    cell_style = "display: inline-block"
+    if not last:
+        cell_style += "; padding-right: {}px".format(metrics.gap)
+    return ElementNode(
+        "span",
+        {"class": "md-table-cell", "style": cell_style},
+        [ElementNode("span", {"style": block_style}, text, generated=True), spacer],
+        generated=True,
+    )
+
+
+def _row_nodes(row: Row, widths: Sequence[int], metrics) -> List[ElementNode]:
     header, cells = row
     wrapped = [
-        _lines(_words(cell, widths[index], ambiguous), widths[index])
+        _lines(_words(cell, widths[index], metrics, header), widths[index], metrics)
         for index, cell in enumerate(cells)
     ]
     height = max((len(lines) for lines in wrapped), default=1)
     classes = "md-table-row md-table-head" if header else "md-table-row"
+    emit = _spaced_cell if isinstance(metrics, _Proportional) else _cell_span
     nodes: List[ElementNode] = []
     for line in range(height):
         spans: List[Node] = []
         for index, lines in enumerate(wrapped):
             spans.append(
-                _cell_span(
+                emit(
                     lines[line] if line < len(lines) else [],
                     widths[index],
                     _alignment(cells[index]),
                     index == len(cells) - 1,
+                    metrics,
                 )
             )
         nodes.append(ElementNode("div", {"class": classes}, spans, generated=True))
@@ -468,20 +652,76 @@ def budgets(
     )
 
 
+def pixel_budget(
+    viewport_width: float, rem_px: int, cap: int, scale: float = 1.0
+) -> int:
+    """The width a proportional table may take, in pixels.
+
+    The same chrome as `budgets`, less one rem for the scrollbar and the host's
+    rounding; `table_max_columns` still bounds it on a very wide screen, at an
+    average character's width.
+    """
+    font_px = table_font_px(rem_px, scale)
+    widest = int(cap * AVERAGE_EM * font_px)
+    if viewport_width <= 0 or rem_px <= 0:
+        return min(widest, int(FALLBACK_COLUMNS * AVERAGE_EM * font_px))
+    content = viewport_width - (CHROME_REM + 1) * rem_px
+    return max(1, min(widest, int(content)))
+
+
+def _metrics_for(
+    tables: Sequence[ElementNode], proportional: ProportionalTables
+) -> Optional[_Proportional]:
+    """Measured metrics for every character these tables use, or None while
+    the measurer has yet to learn some of them."""
+    collector = _Collector()
+    for table in tables:
+        for header, cells in _rows(table):
+            for cell in cells:
+                _words(cell, 1 << 30, collector, header)
+    widths: Dict[str, Mapping[str, float]] = {}
+    for style, chars in sorted(collector.needed.items()):
+        found = proportional.measure(
+            proportional.family, proportional.font_px, style, frozenset(chars)
+        )
+        if found is None:
+            return None
+        widths[style] = found
+    return _Proportional(widths, proportional.font_px)
+
+
 def _table_node(
-    table: ElementNode, latin: int, cjk: int, style: str = ""
+    table: ElementNode,
+    latin: int,
+    cjk: int,
+    style: str = "",
+    proportional: Optional[ProportionalTables] = None,
+    measured: Optional[_Proportional] = None,
 ) -> ElementNode:
     rows = _rows(table)
-    wide = _has_cjk(rows)
-    ambiguous = 2 if wide else 1
-    natural, longest = _column_extents(rows, ambiguous)
-    widths = _allocate(natural, longest, cjk if wide else latin)
+    if measured is not None and proportional is not None:
+        metrics = measured
+        budget = proportional.budget_px
+        wide = False
+        # Double quotes only: the serialiser writes them as `&quot;`, which
+        # minihtml reads; a family in single quotes is dropped.
+        style = "; ".join(
+            part
+            for part in (style, "font-family: {}".format(proportional.family))
+            if part
+        )
+    else:
+        wide = _has_cjk(rows)
+        metrics = _Monospace(2 if wide else 1)
+        budget = cjk if wide else latin
+    natural, longest = _column_extents(rows, metrics)
+    widths = _allocate(natural, longest, budget, metrics)
     children: List[Node] = []
     caption = _caption(table)
     if caption is not None:
         children.append(caption)
     for index, row in enumerate(rows):
-        nodes = _row_nodes(row, widths, ambiguous)
+        nodes = _row_nodes(row, widths, metrics)
         last_head = row[0] and (index + 1 == len(rows) or not rows[index + 1][0])
         if last_head and nodes:
             nodes[-1].attrs["class"] += " md-table-rule"
@@ -493,16 +733,38 @@ def _table_node(
     return ElementNode("div", attrs, children, generated=True)
 
 
-def replace_tables(nodes: List[Node], latin: int, cjk: int, style: str = "") -> None:
-    """Replace every ``table`` subtree in place with aligned monospace rows.
-
-    `style` comes from `table_style`, and sizes the table's font to match the
-    budget it was laid out for.
-    """
-    for index, node in enumerate(list(nodes)):
+def _tables(nodes: List[Node]) -> Iterator[Tuple[List[Node], int]]:
+    """Where each outermost ``table`` sits: its siblings and its index."""
+    for index, node in enumerate(nodes):
         if not isinstance(node, ElementNode):
             continue
         if node.tag == "table":
-            nodes[index] = _table_node(node, latin, cjk, style)
+            yield nodes, index
             continue
-        replace_tables(node.children, latin, cjk, style)
+        yield from _tables(node.children)
+
+
+def replace_tables(
+    nodes: List[Node],
+    latin: int,
+    cjk: int,
+    style: str = "",
+    proportional: Optional[ProportionalTables] = None,
+) -> None:
+    """Replace every ``table`` subtree in place with aligned rows.
+
+    `style` comes from `table_style`, and sizes the table's font to match the
+    budget it was laid out for. With `proportional`, the tables are set in its
+    font once every character they use has been measured, and in monospace
+    until then (ADR 0024).
+    """
+    places = list(_tables(nodes))
+    measured = None
+    if proportional is not None and places:
+        measured = _metrics_for(
+            [siblings[index] for siblings, index in places], proportional
+        )
+    for siblings, index in places:
+        siblings[index] = _table_node(
+            siblings[index], latin, cjk, style, proportional, measured
+        )

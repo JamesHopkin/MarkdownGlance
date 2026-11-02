@@ -26,6 +26,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   1.0 by default. The column budget is worked out at the scaled size, so a
   smaller table fits more columns before its cells wrap, and the font is
   snapped to a whole pixel so the advance stays the one measured in ADR 0007.
+- **Tables can be set in a proportional font.** `table_font_family` names the
+  font; the preview measures how wide it draws each character in it and lays
+  the columns out in pixels, each cell held at its column's width, so any font
+  aligns. Empty, the default, keeps the monospace layout.
 
 ## [0.7.0] - 2026-11-01
 

@@ -48,6 +48,13 @@
     // it, so alignment holds at any size.
     "table_font_scale": 1.0,
 
+    // Set tables in a proportional font instead, written as for font_family:
+    // "Arial Narrow, Arial, sans-serif". The preview measures how wide it draws
+    // each character and lays the columns out from that, so any font aligns; a
+    // table is shown in monospace for the moment that takes. Empty keeps the
+    // monospace layout.
+    "table_font_family": "",
+
     // Fenced code that names its language is coloured the way the editor
     // colours it inside the source: the same syntaxes, the same colour scheme.
     // It is tokenised here, by Sublime Text; nothing is sent anywhere.
@@ -71,8 +78,8 @@
 
     // The font for the preview's text and the contents panel, as you would
     // write a CSS font-family: "Inter", or "Inter, Noto Sans CJK SC, sans-serif"
-    // to name fallbacks. Empty keeps the package's own. Code and tables stay
-    // monospace, since their columns are laid out in it. The contents panel
+    // to name fallbacks. Empty keeps the package's own. Code stays monospace,
+    // and so do tables unless table_font_family is set. The contents panel
     // sizes itself for the package's fonts, so a much wider one may wrap its
     // longest heading.
     "font_family": "",

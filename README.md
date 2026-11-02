@@ -188,6 +188,20 @@ the preview's width. Set `table_font_scale` (0.5 to 1.5, default 1.0) to draw
 them smaller or larger than the body text; a smaller table fits more columns
 before its cells wrap. For a traditional web-style table, use **Open in Browser**.
 
+Set `table_font_family` to set tables in a proportional font instead:
+
+```json
+{
+    "table_font_family": "Arial Narrow, Arial, sans-serif"
+}
+```
+
+The preview measures how wide it draws each character in that font and lays
+the columns out from the measurements, so the columns line up in any font, and
+a narrow one fits much more into each column. The first time a font or size
+is used, a table appears in monospace for a moment while it is measured. Names
+are separated by commas, as for `font_family`.
+
 ## Code blocks
 
 A fenced block that names its language — ` ```python `, ` ```js `, ` ```sh ` —

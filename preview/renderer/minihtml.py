@@ -129,6 +129,17 @@ def _serialise_image(
     results: Dict[AssetKey, AssetResult],
     privacy_seen: Set[AssetKind],
 ) -> str:
+    if node.generated and node.attrs.get("class") == "md-table-spacer":
+        # A proportional table's spacer (ADR 0024): the renderer's own image,
+        # never an asset, and nothing to wait for.
+        values = (
+            _attr(node.attrs.get(name, ""))
+            for name in ("src", "width", "height", "style")
+        )
+        return (
+            '<img class="md-table-spacer" src="{}" width="{}" height="{}" '
+            'style="{}">'.format(*values)
+        )
     key = node.asset_key
     result = results.get(key) if key is not None else None
     if isinstance(result, Ready):

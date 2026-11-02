@@ -17,7 +17,15 @@ from .highlight import Highlighter, highlight
 from .markdown_engine import MarkdownEngine, default_engine
 from .model import ElementNode, Node, StructuredDoc, TextNode
 from .stylesheet import root_font_px
-from .tables import budgets, replace_tables, table_style
+from .tables import (
+    ProportionalTables,
+    TextMeasurer,
+    budgets,
+    pixel_budget,
+    replace_tables,
+    table_font_px,
+    table_style,
+)
 
 # The theme reaches the builders because a diagram is baked at request time:
 # it cannot adapt to the preview background the way CSS does. A formula is
@@ -335,6 +343,7 @@ def parse(
     mermaid_url_builder: Optional[MermaidUrlBuilder] = None,
     math_url_builder: Optional[MathUrlBuilder] = None,
     highlighter: Optional[Highlighter] = None,
+    measurer: Optional[TextMeasurer] = None,
 ) -> StructuredDoc:
     parser = _TreeParser()
     parser.feed((engine or default_engine()).convert(request.markdown))
@@ -400,8 +409,26 @@ def parse(
         request.settings.table_max_columns,
         scale,
     )
+    family = request.settings.table_font_family
+    proportional = (
+        ProportionalTables(
+            family,
+            table_font_px(rem_px, scale),
+            pixel_budget(
+                request.viewport_width,
+                rem_px,
+                request.settings.table_max_columns,
+                scale,
+            ),
+            measurer,
+        )
+        if family and measurer is not None
+        else None
+    )
     _number_ordered_lists(parser.roots)
-    replace_tables(parser.roots, latin, cjk, table_style(rem_px, scale))
+    replace_tables(
+        parser.roots, latin, cjk, table_style(rem_px, scale), proportional
+    )
 
     return StructuredDoc(
         tuple(parser.roots),

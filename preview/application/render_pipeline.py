@@ -5,6 +5,7 @@ from ..assets.mermaid import mermaid_locator
 from ..domain.contracts import DiagnosticStage, PreviewDocument, RenderRequest
 from ..renderer import parse, serialise
 from ..renderer.highlight import Highlighter
+from ..renderer.tables import TextMeasurer
 from .errors import RenderFailure
 from .ports import AssetResolverPort
 
@@ -13,6 +14,7 @@ def render(
     request: RenderRequest,
     resolver: AssetResolverPort,
     highlighter: Optional[Highlighter] = None,
+    measurer: Optional[TextMeasurer] = None,
 ) -> PreviewDocument:
     """Parse, resolve the assets, serialise -- naming the stage that fails.
 
@@ -27,6 +29,7 @@ def render(
             mermaid_url_builder=mermaid_locator,
             math_url_builder=math_image_url,
             highlighter=highlighter,
+            measurer=measurer,
         )
     except RenderFailure:
         raise

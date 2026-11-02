@@ -22,6 +22,7 @@ RENDER_KEYS = frozenset(
         "math_server",
         "table_max_columns",
         "table_font_scale",
+        "table_font_family",
         "enable_syntax_highlighting",
         "enable_toc",
         "toc_minimum_length",

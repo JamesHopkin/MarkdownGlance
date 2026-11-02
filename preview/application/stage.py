@@ -30,7 +30,8 @@ class PreviewStage:
     showing: Optional[str] = None
     mode: PreviewMode = PreviewMode.SIDE_BY_SIDE
     zoom: float = 1.0
-    table_budget: Optional[Tuple[int, int]] = None
+    # The character budgets, and the pixel one when tables are proportional.
+    table_budget: Optional[Tuple[Tuple[int, int], Optional[int]]] = None
     # Where each document was scrolled to, as a fraction of its own height:
     # the surface is one viewport, and a document put back at the pixel it
     # left would be in the wrong place after a divider drag or a zoom.

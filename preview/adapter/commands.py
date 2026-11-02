@@ -7,6 +7,7 @@ import sys
 import sublime
 import sublime_plugin
 
+from ..presentation.phantom_view import OWNER_KEY
 from .container import container
 
 
@@ -183,6 +184,14 @@ class MdglanceZoomCommand(sublime_plugin.WindowCommand):
                 or _preview_open(self.window)
             )
         )
+
+
+class MdglanceTrimSurfaceCommand(sublime_plugin.TextCommand):
+    """Cut a surface back to `size`, after the table measurer's lines."""
+
+    def run(self, edit, size=0):
+        if self.view.settings().has(OWNER_KEY):
+            self.view.erase(edit, sublime.Region(size, self.view.size()))
 
 
 class MdglanceScrollCommand(sublime_plugin.TextCommand):

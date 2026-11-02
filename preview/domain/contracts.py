@@ -91,6 +91,7 @@ class RenderSettings:
     remote_max_dimension: int = 4096
     table_max_columns: int = 200
     table_font_scale: float = 1.0
+    table_font_family: str = ""
     enable_syntax_highlighting: bool = True
     enable_toc: bool = False
     toc_minimum_length: int = 1200

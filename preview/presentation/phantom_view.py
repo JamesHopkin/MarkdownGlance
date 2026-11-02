@@ -85,6 +85,16 @@ class PhantomViewBackend:
         self._phantoms[view.id()] = sublime.PhantomSet(view, "mdglance")
         return SurfaceHandle(self.name, view.id(), window.id())
 
+    def visible_view(self, handle: SurfaceHandle):
+        """The surface's view while it is the one on screen in its group, for
+        measuring text in (ADR 0024): a view behind another tab is not laid
+        out, and answers zero for everything."""
+        window, view = self._window_view(handle)
+        if window is None or view is None:
+            return None
+        group, _ = window.get_view_index(view)
+        return view if window.active_view_in_group(group) == view else None
+
     def viewport_width(self, handle: SurfaceHandle) -> float:
         view = self._view(handle)
         return float(view.viewport_extent()[0]) if view is not None else 0.0

@@ -29,10 +29,11 @@ from ..presentation.phantom_view import PhantomViewBackend
 from ..renderer.errors import ERROR_NOTE, LIBRARIES_NOTE
 from ..renderer.markdown_engine import library_failure
 from ..renderer.stylesheet import line_px, root_font_px
-from ..renderer.tables import budgets
+from ..renderer.tables import budgets, pixel_budget
 from .clock import SublimeClock
 from .executors import OwnedExecutors
 from .highlighter import SyntaxHighlighter
+from .table_measurer import TableMeasurer
 from .settings import SettingsAdapter
 from .source_access import caret_row, read_source, reveal_line
 from .theme import theme_snapshot
@@ -66,6 +67,7 @@ class Container:
         self.rasteriser = None
         self.mermaid_renderer = None
         self.highlighter = None
+        self.measurer = None
         self.clock = None
         self.policy_revision = 0
         self.recent_stages = []
@@ -128,6 +130,9 @@ class Container:
         )
         base_css = sublime.load_resource(
             "Packages/MarkdownGlance/resources/preview.css"
+        )
+        self.measurer = TableMeasurer(
+            self._measuring_surface, base_css, self._tables_measured
         )
         self.panel = PanelController(
             self.backend,
@@ -241,12 +246,35 @@ class Container:
         return self.backend.viewport_width(handle)
 
     def _table_budget(self, stage, viewport_width: float):
-        return budgets(
+        settings = self.settings.get()
+        rem_px = root_font_px(stage.zoom if stage is not None else 1.0)
+        args = (
             viewport_width,
-            root_font_px(stage.zoom if stage is not None else 1.0),
-            self.settings.get().table_max_columns,
-            self.settings.get().table_font_scale,
+            rem_px,
+            settings.table_max_columns,
+            settings.table_font_scale,
         )
+        # A proportional table is laid out in pixels, so the poll compares
+        # those as well; the character budgets alone would miss a resize.
+        pixels = pixel_budget(*args) if settings.table_font_family else None
+        return budgets(*args), pixels
+
+    def _measuring_surface(self):
+        """A preview on screen, for the table measurer to work in."""
+        for stage in self.manager.stages():
+            handle = stage.surface
+            if handle is not None and self.backend.is_alive(handle):
+                view = self.backend.visible_view(handle)
+                if view is not None:
+                    return view
+        return None
+
+    def _tables_measured(self) -> None:
+        """Widths have arrived: set the documents on screen again, since any
+        proportional table among them was set in monospace meanwhile."""
+        for stage in self.manager.stages():
+            if stage.showing is not None:
+                self.scheduler.request_render(stage.showing, "measured")
 
     def _watch_viewports(self) -> None:
         """Re-render the preview whose pane has been resized under it.
@@ -313,7 +341,10 @@ class Container:
         """Render on the pool, timing the Python half of a repaint."""
         started = time.perf_counter()
         document = render(
-            request, resolver=self.resolver, highlighter=self.highlighter
+            request,
+            resolver=self.resolver,
+            highlighter=self.highlighter,
+            measurer=self.measurer,
         )
         self.recent_renders.append(
             {

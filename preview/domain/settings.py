@@ -204,6 +204,9 @@ def parse_settings(
             False,
             report,
         ),
+        table_font_family=_font_family(
+            values, "table_font_family", defaults.table_font_family, report
+        ),
         table_max_columns=_number(
             values,
             "table_max_columns",

@@ -1,3 +1,4 @@
+import math
 import os.path
 import re
 import unicodedata
@@ -7,7 +8,12 @@ from unittest import mock
 from MarkdownGlance.preview.application.render_pipeline import render
 from MarkdownGlance.preview.domain.settings import parse_settings
 from MarkdownGlance.preview.renderer import tables
-from MarkdownGlance.preview.renderer.tables import budgets, table_style
+from MarkdownGlance.preview.renderer.tables import (
+    MEASURE_SAFETY,
+    budgets,
+    pixel_budget,
+    table_style,
+)
 from MarkdownGlance.preview.domain.contracts import (
     AssetStatus,
     Failed,
@@ -303,3 +309,111 @@ class ViewportFitTest(unittest.TestCase):
         columns = budgets(700.0, 16, 200)[0]
         for _, cells in rows(SOURCES, viewport_width=700.0):
             self.assertLessEqual(sum(width(cell) for cell in cells), columns, cells)
+
+
+class FakeMeasurer:
+    """Every character `width` px, bold a pixel wider and code two; or no
+    answer at all, as before the host has measured anything."""
+
+    def __init__(self, width=5.0, answer=True):
+        self.width = width
+        self.answer = answer
+        self.asked = []
+
+    def __call__(self, family, font_px, style, chars):
+        self.asked.append((family, font_px, style, chars))
+        if not self.answer:
+            return None
+        extra = (1.0 if "b" in style else 0.0) + (2.0 if "c" in style else 0.0)
+        return {char: self.width + extra for char in chars}
+
+
+FAMILY = '"Arial Narrow", Arial, sans-serif'
+SPACER = re.compile(r'<img class="md-table-spacer" [^>]*width="(\d+)"')
+PROPORTIONAL_ROW = re.compile(r'<div class="(md-table-row[^"]*)">(.*?)</div>(?=<div|$)')
+
+
+def proportional(markdown, measurer, viewport_width=1000.0, **settings):
+    settings = RenderSettings(table_font_family=FAMILY, **settings)
+    return render(
+        request(markdown, settings, viewport_width), FakeResolver(), measurer=measurer
+    ).body_html
+
+
+SIMPLE = """| Name | Value |
+| --- | ---: |
+| alpha | 1 |
+| **beta** | `22` |
+"""
+
+
+class ProportionalTableTest(unittest.TestCase):
+    def test_cells_are_held_at_their_column_widths_by_spacers(self):
+        html = proportional(SIMPLE, FakeMeasurer())
+        # "alpha" and "beta" in bold set the first column: 5 x 5 px, or
+        # 4 x 6 px, with the safety margin and rounded up.
+        first = math.ceil(5 * 5.0 * MEASURE_SAFETY)
+        widths = [int(width) for width in SPACER.findall(html)]
+        self.assertEqual(widths[0::2], [first] * 3)
+        self.assertIn("font-family: &quot;Arial Narrow&quot;, Arial, sans-serif", html)
+        self.assertNotIn("Unavailable", html)
+
+    def test_a_right_aligned_column_aligns_inside_its_spacer(self):
+        html = proportional(SIMPLE, FakeMeasurer())
+        self.assertEqual(html.count("text-align: right"), 3)
+
+    def test_each_style_is_measured_in_its_own_right(self):
+        measurer = FakeMeasurer()
+        proportional(SIMPLE, measurer)
+        styles = {style for _, _, style, _ in measurer.asked}
+        # Regular text, the bold header row and **beta**, and `22` in code.
+        self.assertEqual(styles, {"", "b", "c"})
+        regular = next(chars for _, _, style, chars in measurer.asked if style == "")
+        self.assertIn(" ", regular)
+        self.assertEqual(
+            {(family, size) for family, size, _, _ in measurer.asked}, {(FAMILY, 16)}
+        )
+
+    def test_until_measured_the_table_is_monospace(self):
+        html = proportional(SIMPLE, FakeMeasurer(answer=False))
+        self.assertNotIn("md-table-spacer", html)
+        self.assertNotIn("font-family", html)
+        self.assertIn(PAD, html)
+
+    def test_without_a_family_nothing_is_measured(self):
+        measurer = FakeMeasurer()
+        render(request(SIMPLE), FakeResolver(), measurer=measurer)
+        self.assertEqual(measurer.asked, [])
+
+    def test_a_narrow_preview_wraps_rows_within_the_pixel_budget(self):
+        measurer = FakeMeasurer(width=8.0)
+        for viewport in (320.0, 500.0, 700.0):
+            html = proportional(SOURCES, measurer, viewport_width=viewport)
+            budget = pixel_budget(viewport, 16, 200)
+            gap = 16
+            for match in PROPORTIONAL_ROW.finditer(html):
+                widths = [int(width) for width in SPACER.findall(match.group(2))]
+                self.assertLessEqual(
+                    sum(widths) + gap * (len(widths) - 1), budget, (viewport, widths)
+                )
+
+    def test_the_scaled_font_is_measured_at_its_own_size(self):
+        measurer = FakeMeasurer()
+        html = proportional(SIMPLE, measurer, table_font_scale=0.75)
+        self.assertEqual({size for _, size, _, _ in measurer.asked}, {12})
+        self.assertIn("font-size: 0.7500rem", html)
+
+    def test_the_family_setting_is_checked(self):
+        warnings = []
+        accepted = parse_settings({"table_font_family": FAMILY}, warnings.append)
+        self.assertEqual(
+            accepted.table_font_family, '"Arial Narrow", "Arial", sans-serif'
+        )
+        quoted = parse_settings(
+            {"table_font_family": "'Arial Narrow'"}, warnings.append
+        )
+        self.assertEqual(quoted.table_font_family, '"Arial Narrow"')
+        for bad in ("Arial; color: red", ["Arial"]):
+            parsed = parse_settings({"table_font_family": bad}, warnings.append)
+            self.assertEqual(parsed.table_font_family, "")
+        self.assertEqual(len(warnings), 2)
