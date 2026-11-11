@@ -66,10 +66,22 @@ returning. The colours land in the HTML as inline styles on generated spans,
 so a theme change re-renders a highlighted document rather than repainting
 it. See [ADR 0021](adr/0021-fenced-code-is-coloured-by-the-editors-syntaxes.md).
 
+Tables are typeset by the renderer, since minihtml has no `<table>`.
+`renderer/tables.py` shares the preview's width over the columns, wraps each
+cell and emits every physical line as its own row. Widths come from a metrics
+object: in monospace, characters padded with U+00A0
+([ADR 0007](adr/0007-table-rendering-under-minihtml.md)); with
+`table_font_family`, pixels summed from advances that `adapter/table_measurer.py`
+measures in an on-screen preview, each cell held at its column's width by a
+stretched spacer image. A render whose characters are not measured yet sets
+its tables in monospace, and the measurer asks for another once they are. See
+[ADR 0024](adr/0024-tables-can-be-set-in-a-proportional-font.md).
+
 The stylesheet is the package's own. The one part a user can change is the
 body font: `font_family`, validated into a CSS list in `domain/settings.py`,
 is written after `preview.css` by `renderer/stylesheet.py` and reaches what
-inherits from `body`, never code or tables. See
+inherits from `body`, never code, nor tables unless they are given
+`table_font_family`. See
 [ADR 0022](adr/0022-the-preview-font-is-a-setting-not-a-stylesheet.md).
 
 ## Reliability and safety
